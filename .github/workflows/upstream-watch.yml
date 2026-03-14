@@ -1,0 +1,75 @@
+name: "🏴‍☠️ Upstream Watch"
+
+on:
+  schedule:
+    - cron: "23 11 * * 1" # Monday ~11:23 UTC
+  workflow_dispatch: # manual trigger
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/diegosouzapw/OmniRoute.git || true
+          git fetch upstream main --depth=50
+
+      - name: Compare and create issue if new commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find merge base or use our root commit
+          MERGE_BASE=$(git merge-base HEAD upstream/main 2>/dev/null || git rev-list --max-parents=0 HEAD)
+
+          # Get new upstream commits since our last known point
+          NEW_COMMITS=$(git log --oneline "${MERGE_BASE}..upstream/main" 2>/dev/null || echo "")
+
+          if [ -z "$NEW_COMMITS" ]; then
+            echo "No new upstream commits. Nothing to do."
+            exit 0
+          fi
+
+          COMMIT_COUNT=$(echo "$NEW_COMMITS" | wc -l)
+          echo "Found $COMMIT_COUNT new upstream commits"
+
+          # Get changed files summary
+          CHANGED_FILES=$(git diff --stat "${MERGE_BASE}..upstream/main" -- '*.ts' '*.tsx' '*.js' '*.json' 2>/dev/null | tail -1 || echo "")
+
+          # Build issue body
+          BODY=$(cat <<'HEADER'
+          Tem coisa nova no upstream do Diego.
+
+          ## Commits novos
+          ```
+          HEADER
+          )
+          BODY="${BODY}
+          ${NEW_COMMITS}
+          \`\`\`
+
+          ## Resumo
+          ${CHANGED_FILES}
+
+          ## Link
+          https://github.com/diegosouzapw/OmniRoute/commits/main
+
+          ---
+          *Gerado automaticamente pelo upstream-watch*"
+
+          # Close previous upstream-watch issues
+          OPEN_ISSUES=$(gh issue list --label "upstream" --state open --json number --jq '.[].number' 2>/dev/null || echo "")
+          for ISSUE_NUM in $OPEN_ISSUES; do
+            gh issue close "$ISSUE_NUM" --comment "Substituída por issue mais recente." 2>/dev/null || true
+          done
+
+          # Create new issue
+          gh issue create \
+            --title "🔔 ${COMMIT_COUNT} commits novos no upstream" \
+            --body "$BODY" \
+            --label "upstream"
